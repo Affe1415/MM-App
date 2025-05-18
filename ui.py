@@ -3,6 +3,11 @@ from tkinter import ttk, messagebox, simpledialog, filedialog
 from tkinter.scrolledtext import ScrolledText
 import sqlite3
 import database
+import unicodedata
+
+def normalize_text(text):
+    """ Tar bort accenter och gör texten lowercase """
+    return unicodedata.normalize('NFKD', text).encode('ASCII', 'ignore').decode('utf-8').lower()
 
 class TemplateApp:
     def __init__(self, root):
@@ -304,6 +309,10 @@ class TemplateApp:
             self.update_status("Inga mallar hittades")
             self.text_area.delete('1.0', 'end')
 
+            # Filtrera direkt efter laddning om sökterm finns
+        self.filter_templates()
+
+
     def add_template(self):
         title = simpledialog.askstring('Ny mall', 'Mallens titel:')
         if title:
@@ -348,6 +357,8 @@ class TemplateApp:
             self.text_area.insert('1.0', content)
             self.current_template_id = self.templates[title]
             self.update_status(f"Visar mall '{title}'")
+            self.highlight_search_terms()
+
 
     def save_template(self):
         selected = self.template_listbox.curselection()
@@ -370,14 +381,74 @@ class TemplateApp:
         else:
             self.update_status("Inget innehåll att kopiera")
 
+    def highlight_search_terms(self):
+        self.text_area.tag_remove('highlight', '1.0', 'end')  # Ta bort gamla highlights
+        search_term = normalize_text(self.search_var.get())
+
+        if not search_term:
+            return
+
+        content = self.text_area.get('1.0', 'end')
+        normalized_content = normalize_text(content)
+
+        start_idx = 0
+        while True:
+            match_idx = normalized_content.find(search_term, start_idx)
+            if match_idx == -1:
+                break
+
+            # Räkna ut var i textområdet den här träffen är
+            start = f"1.0+{match_idx}c"
+            end = f"1.0+{match_idx + len(search_term)}c"
+
+            self.text_area.tag_add('highlight', start, end)
+            start_idx = match_idx + len(search_term)
+
+        # Definiera highlight-stilen
+        self.text_area.tag_config('highlight', background='#ffe680')  # Gul bakgrund
+
+
     def filter_templates(self):
-        search_term = self.search_var.get().lower()
-        for i in range(self.template_listbox.size()):
-            title = self.template_listbox.get(i)
-            if search_term in title.lower():
-                self.template_listbox.itemconfig(i, foreground='black')
-            else:
-                self.template_listbox.itemconfig(i, foreground='#cccccc')
+        search_term = normalize_text(self.search_var.get())
+
+        sub = self.subcategory_var.get()
+        if not sub:
+            return
+
+        conn = database.connect()
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT id FROM categories WHERE name=?', (sub,))
+        result = cursor.fetchone()
+        if not result:
+            conn.close()
+            return
+
+        sub_id = result[0]
+
+        # Hämta alla mallar i den här underkategorin
+        cursor.execute('SELECT id, title, content FROM templates WHERE category_id=?', (sub_id,))
+        templates = cursor.fetchall()
+
+        conn.close()
+
+        self.template_listbox.delete(0, 'end')
+        self.templates = {}
+
+        for template_id, title, content in templates:
+            normalized_title = normalize_text(title)
+            normalized_content = normalize_text(content)
+
+            if search_term in normalized_title or search_term in normalized_content:
+                self.template_listbox.insert('end', title)
+                self.templates[title] = template_id
+
+        if self.template_listbox.size() == 0:
+            self.update_status("Inga mallar matchar din sökning")
+        else:
+            self.update_status(f"Hittade {self.template_listbox.size()} mallar")
+
+
 
     def export_templates(self):
         path = filedialog.asksaveasfilename(
